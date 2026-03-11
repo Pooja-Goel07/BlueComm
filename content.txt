@@ -1,0 +1,225 @@
+TECHNICAL DESIGN DOCUMENT
+Bluetooth Classic Based Android Messaging System
+Version 1.0  |  Flutter + Dart  |  Android RFCOMM
+Shaurya Saini — 23BCT0074
+Pooja Goel — 23BCT0106
+Instructor: Dr. Swarnalatha P, SCOPE, VIT
+Date: 18 February 2026
+
+1. Project Overview
+1.1 Introduction and Problem Statement
+Modern messaging applications are deeply dependent on active internet or cellular connectivity. In environments where such infrastructure is unavailable — disaster zones, remote fieldwork areas, offline classrooms, or controlled industrial floors — conventional messaging applications become completely non-functional. The Bluetooth Classic Based Android Messaging System addresses this critical gap by enabling real-time, bidirectional text communication between two Android devices using only the Bluetooth radio layer, with zero dependency on any external network.
+
+The system leverages Bluetooth Classic (BR/EDR — Basic Rate / Enhanced Data Rate) and the RFCOMM serial port emulation protocol to simulate a wired serial data channel over a wireless Bluetooth link. This approach allows the application to transmit and receive UTF-8 encoded text messages over a reliable, authenticated, and range-limited communication channel entirely under the control of the local devices.
+
+1.2 System Purpose and Scope
+The application is a standalone peer-to-peer (P2P) Android application designed and implemented using the Flutter framework with the Dart programming language. It fulfils the following primary functional scope:
+•	Bluetooth device discovery: Scanning for nearby Bluetooth Classic (BR/EDR) devices and rendering paired and discovered devices in a user-selectable list.
+•	RFCOMM socket connection: Establishing a bidirectional serial socket channel to a selected peer device using the SPP (Serial Port Profile) UUID.
+•	Real-time text messaging: Encoding, framing, transmitting, receiving, and decoding UTF-8 text messages over the active RFCOMM socket.
+•	Connection lifecycle management: Monitoring connection integrity, executing bounded automatic reconnection attempts, and cleanly terminating sessions.
+•	Runtime permission management: Dynamically requesting and validating Android Bluetooth and location permissions required for discovery and connection operations.
+
+The system explicitly excludes internet-based communication, persistent message storage, BLE (Bluetooth Low Energy) protocols, multi-device simultaneous connections, and application-level encryption in Version 1.0. These are documented as planned future enhancements.
+
+1.3 Technology Domain
+This system occupies the domain of Bluetooth-Based Peer-to-Peer Communication Systems for Android. It draws on the following technical disciplines:
+•	Bluetooth Protocol Stack: Understanding of the BR/EDR radio layer, L2CAP (Logical Link Control and Adaptation Protocol), RFCOMM serial emulation protocol, and the SPP application profile.
+•	Android Platform APIs: BluetoothAdapter, BluetoothDevice, BluetoothSocket (client), BluetoothServerSocket (server), and Android runtime permission model.
+•	Flutter/Dart Application Framework: Dart async/await concurrency model, StreamBuilder reactive UI pattern, StatefulWidget lifecycle, and plugin interop with native Android APIs.
+•	Software Engineering: OAL (Object-Action Language) object-oriented design methodology, layered modular architecture, explicit state machine design, and IEEE SRS/SDS documentation standards.
+
+1.4 Key Design Principles
+The system was designed around the following non-negotiable principles:
+Principle	Description
+Offline-first	The entire communication pipeline operates without any network infrastructure. No DNS, IP routing, cellular, or Wi-Fi is required at any stage.
+Session-based architecture	No data is persisted beyond an active session. All runtime objects — messages, device references, connection states — reside solely in volatile memory.
+Separation of concerns	UI logic, business logic, Bluetooth communication, and platform services are cleanly separated into distinct subsystems and layers.
+State-driven control	All connection behavior is governed by an explicit connection state machine, preventing ambiguous transitions and invalid operations.
+Modular extensibility	The architecture is designed for incremental feature addition — encryption, file transfer, multi-device support — without requiring structural redesign.
+Lightweight design	The application avoids heavyweight dependencies. No embedded database, no background services, no cloud SDKs.
+
+1.5 Communication Architecture: RFCOMM over Bluetooth Classic
+The foundational communication mechanism is RFCOMM (Radio Frequency Communication), a transport-layer protocol that emulates an RS-232 serial port interface on top of the L2CAP Bluetooth channel. RFCOMM is part of the Bluetooth Classic stack and is exposed on Android via BluetoothSocket.
+
+Connection establishment proceeds as follows: the initiating device (client role) calls BluetoothDevice.createRfcommSocketToServiceRecord(SPP_UUID), where SPP_UUID is the standard Serial Port Profile identifier: 00001101-0000-1000-8000-00805F9B34FB. This UUID is universally recognized across Android and Bluetooth Classic-compliant devices, ensuring maximum cross-device compatibility. The receiving device (server role) must have a corresponding BluetoothServerSocket listening on the same UUID. Once the socket handshake completes, both sides obtain paired InputStream and OutputStream references, enabling full-duplex data exchange.
+
+Message framing uses a newline delimiter (\n byte) appended to each UTF-8 encoded message payload. This simplistic framing strategy eliminates the need for length-prefix or binary TLV (Type-Length-Value) headers, which would add complexity without benefit in a text-only messaging model. The receiver maintains a byte buffer and segments complete messages upon each newline encounter.
+
+1.6 Platform and Runtime Context
+The system targets Android OS with a minimum SDK of API Level 26 (Android 8.0 Oreo). This minimum is set to ensure access to modern Android Bluetooth permission semantics and to avoid legacy Bluetooth stack inconsistencies present in earlier versions. The application uses the flutter_bluetooth_serial package (v0.4.x), which exposes Android Bluetooth Classic RFCOMM APIs to Flutter/Dart code via platform channels. Runtime permission management is handled by the permission_handler package (v11.x).
+
+On Android 12+ (API Level 31+), Bluetooth permissions were redesigned — BLUETOOTH_SCAN and BLUETOOTH_CONNECT replace older coarse permissions. The Permission Handling Subsystem dynamically negotiates the correct permission set based on the detected Android OS version, ensuring forward compatibility across the target device range.
+
+2. Project Structure (Working Version as per SDS)
+2.1 Layered Modular Architecture
+The system is organized into four distinct architectural layers. Each layer has precisely defined responsibilities and communicates with adjacent layers through well-defined interfaces. This hierarchy, from highest to lowest abstraction, is as follows:
+
+Layer	Responsibility	Key Components
+Presentation Layer	Flutter UI rendering, user interaction event handling, reactive state display	DeviceDiscoveryScreen, ChatScreen, StreamBuilder widgets, Snackbar notifications
+Application Logic Layer	Business logic, subsystem orchestration, connection state management	BluetoothManager, ConnectionManager, MessagingModule, PermissionHandler, DeviceDiscoverySubsystem
+Bluetooth Communication Layer	RFCOMM socket operations, byte stream I/O, device adapter control	BluetoothSocket (client), BluetoothServerSocket (server), InputStream, OutputStream
+Platform Layer	Android OS Bluetooth stack, hardware radio control	Android BR/EDR stack, BluetoothAdapter, OS permission model
+
+2.2 Subsystem Descriptions
+2.2.1 Device Discovery Subsystem
+This subsystem is the entry point of the application lifecycle. It initiates Bluetooth device scanning via the flutter_bluetooth_serial discovery API and categorizes discovered devices into two groups: paired devices (previously bonded with the local adapter) and newly discovered devices (found in the current scan). Paired devices are presented at the top of the list to allow faster reconnection without requiring a complete discovery cycle.
+
+The subsystem operates asynchronously using Dart streams. As devices are detected by the Bluetooth adapter, they are streamed in real time to the Application Logic Layer, which updates the Presentation Layer via setState() or StreamBuilder. Once the user selects a device, the subsystem forwards the BluetoothDevice reference to the Connection Management Subsystem and suspends further discovery activity to conserve resources.
+
+2.2.2 Connection Management Subsystem
+This is the core state machine of the application. It manages the full lifecycle of the RFCOMM connection across six explicitly defined states:
+•	IDLE — Application has started, Bluetooth is available, no action in progress.
+•	DISCOVERING — Device scan is actively running.
+•	CONNECTING — An RFCOMM socket connection attempt is in progress.
+•	CONNECTED — RFCOMM socket is live. Bidirectional data exchange is active.
+•	RECONNECTING — Connection loss detected. Automatic reconnection attempts underway (max 3 retries).
+•	DISCONNECTED — Connection terminated by user or all reconnection attempts exhausted.
+
+All state transitions are centralized within this subsystem. No other component can alter the connection state directly. This ensures deterministic behavior and prevents race conditions between the UI and socket threads. The subsystem uses a reconnectAttempts counter (integer, max: 3) and applies a fixed delay between retry attempts to balance reliability with resource efficiency.
+
+2.2.3 Messaging Subsystem
+The Messaging Subsystem owns both the outbound and inbound data pipelines over the RFCOMM socket. Its responsibilities include:
+•	Outbound: Encode text input (String) to UTF-8 byte array, append \n delimiter, write bytes to OutputStream asynchronously, append ChatMessage(isSentByUser: true) to messageList, trigger UI update.
+•	Inbound: Maintain StreamSubscription on InputStream, buffer incoming bytes, segment on \n delimiter, decode UTF-8 bytes to String, append ChatMessage(isSentByUser: false) to messageList, trigger UI update.
+
+Version 1.0 does not implement encryption, message acknowledgment, or persistence. All messages exist only in the in-memory messageList (List<ChatMessage>) for the duration of the session.
+
+2.2.4 Permission Handling Subsystem
+Android requires runtime permission grants for Bluetooth operations. This subsystem abstracts all permission lifecycle management from the rest of the application. Before any Bluetooth operation can be initiated, this subsystem verifies the permission status using permission_handler and requests any missing grants via the system permission dialog.
+
+On Android 12+, BLUETOOTH_SCAN and BLUETOOTH_CONNECT permissions are required. On Android 8–11, ACCESS_FINE_LOCATION is additionally required for device discovery. The subsystem handles both permission sets through conditional logic based on the SDK version, exposing a simple checkAndRequest() API to the Application Logic Layer.
+
+2.3 Runtime Data Model
+The application maintains a small, well-defined set of in-memory runtime data structures. Since no persistent storage is used, all data is discarded on session end or application termination.
+
+Structure	Type	Fields / Details
+ChatMessage	Dart class	messageText: String (UTF-8), isSentByUser: bool, timestamp: DateTime (runtime only). Methods: getMessage(): String, isFromUser(): bool
+messageList	List<ChatMessage>	Ordered in-memory collection of all messages in the current session. Preserves send/receive sequence.
+connectionState	Enum (ConnectionState)	IDLE | DISCOVERING | CONNECTING | CONNECTED | RECONNECTING | DISCONNECTED
+connectedDevice	BluetoothDevice? (nullable)	Reference to the currently active peer device. Null when disconnected. Holds deviceAddress and deviceName.
+reconnectAttempts	int (max: 3)	Tracks failed reconnection attempts for a connection loss event. Resets on successful reconnect or DISCONNECTED transition.
+activeSocket	BluetoothConnection?	Reference to the live RFCOMM socket. Propagated to MessagingModule on CONNECTED state. Closed and nullified on DISCONNECTED.
+
+2.4 Runtime Entity Relationships (ER Model)
+The conceptual in-memory entity model defines three entities and two relationships:
+•	BluetoothDevice (PK: deviceAddress) — stores deviceName, btClassType, isPaired, signalStrength
+•	Session (PK: sessionID) — stores startTime, isActive, connectionState, reconnectCount
+•	ChatMessage (PK: messageID) — stores messageText, isSentByUser, timestamp, encoding (UTF-8)
+
+Relationships: One BluetoothDevice initiates exactly one Session (1:1). One Session contains zero-to-many ChatMessage records (1:N). These relationships exist purely at runtime and are not backed by any database engine.
+
+2.5 User Interface Structure
+The UI consists of exactly two screens, each corresponding to a distinct operational phase of the application:
+
+Screen 1 — Device Discovery Screen
+This is the initial screen presented on application launch. It remains active until a successful RFCOMM connection is established. Key UI elements:
+•	Display Name Input Field — allows the user to set a local alias.
+•	Scan / Refresh Button — triggers permission check, then initiates Bluetooth adapter discovery. Displays an animated progress indicator during scanning.
+•	Connection Status Chip — color-coded indicator: Grey (IDLE), Blue (SCANNING), Amber (CONNECTING), Green (CONNECTED).
+•	Paired Devices List — pre-populated from the Bluetooth adapter's bonded device set. Rendered at top for rapid reconnection.
+•	Discovered Devices List — dynamically updated via stream as devices are found during the active scan.
+
+Screen 2 — Chat Screen
+Activated automatically upon successful RFCOMM connection. This screen remains active for the duration of the messaging session. Key UI elements:
+•	Connected Device Name — displayed in the app bar for clear session context.
+•	Message ListView — vertically scrollable list of ChatMessage widgets. Sent messages are right-aligned (blue bubble). Received messages are left-aligned (grey bubble). Driven by a StreamBuilder subscribed to the messageList stream.
+•	Message Input Field — text entry widget for composing outgoing messages. Automatically cleared after successful send.
+•	Send Button — disabled when input is empty. On press, invokes MessagingModule.sendMessage(text).
+•	Disconnect Button — closes RFCOMM socket, releases resources, navigates back to Discovery Screen.
+•	Reconnection Banner — conditionally displayed when connectionState == RECONNECTING. Shows retry counter and a manual reconnect option.
+
+3. Implementation Plan
+3.1 Technology Stack
+
+Category	Technology	Version	Purpose
+Language	Dart	SDK 3.x	Primary application language
+Framework	Flutter	Stable channel	Cross-platform UI and app framework
+Bluetooth Library	flutter_bluetooth_serial	0.4.x	Exposes Android Bluetooth Classic RFCOMM APIs to Dart
+Permission Library	permission_handler	11.x	Runtime Android permission management
+Target Platform	Android OS	API 26+ (Android 8.0+)	Minimum SDK for modern Bluetooth permission model
+Bluetooth Standard	BR/EDR (Bluetooth Classic)	Bluetooth 4.0+	RFCOMM Serial Port Profile communication
+Message Encoding	UTF-8	—	Universal text encoding for message payloads
+State Management	Flutter setState + StreamBuilder	—	Reactive UI driven by connection and message state
+IDE	Android Studio / VS Code	Latest stable	Flutter development and Android SDK tooling
+Version Control	Git	—	Source code management
+
+3.2 Project Directory Structure
+
+bt_messenger/ ├── android/ │   └── app/ │       └── src/main/AndroidManifest.xml   ← Bluetooth permissions declaration ├── lib/ │   ├── main.dart                           ← App entry point │   ├── models/ │   │   └── chat_message.dart               ← ChatMessage data class │   ├── services/ │   │   ├── permission_handler_service.dart ← PermissionHandlerSubsystem │   │   ├── bluetooth_manager.dart          ← BluetoothManager (adapter control) │   │   ├── connection_manager.dart         ← ConnectionManager + state machine │   │   └── messaging_module.dart           ← MessagingModule (send/receive) │   ├── screens/ │   │   ├── device_discovery_screen.dart    ← Screen 1: Discovery UI │   │   └── chat_screen.dart                ← Screen 2: Chat UI │   └── widgets/ │       ├── device_list_tile.dart           ← Reusable device list item │       └── message_bubble.dart             ← Reusable message bubble widget ├── pubspec.yaml                            ← Dependencies └── README.md
+
+3.3 Implementation Steps
+Step 1 — Project Initialization and Dependency Setup
+Create a new Flutter project targeting Android. Configure pubspec.yaml with required dependencies.
+
+# pubspec.yaml dependencies dependencies:   flutter:     sdk: flutter   flutter_bluetooth_serial: ^0.4.0   permission_handler: ^11.0.0
+
+Run flutter pub get to resolve packages. Ensure Android SDK is configured in local.properties and Android Studio or VS Code is set up with the Flutter and Dart plugins.
+
+Step 2 — Android Manifest Configuration
+Declare all required Bluetooth and location permissions in android/app/src/main/AndroidManifest.xml. This is critical for Bluetooth discovery and RFCOMM socket operations to function on real devices.
+
+<!-- AndroidManifest.xml --> <!-- Legacy permissions (Android 8–11) --> <uses-permission android:name="android.permission.BLUETOOTH"/> <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/> <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/> <!-- Modern permissions (Android 12+) --> <uses-permission android:name="android.permission.BLUETOOTH_SCAN"     android:usesPermissionFlags="neverForLocation"/> <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/> <uses-feature android:name="android.hardware.bluetooth" android:required="true"/>
+
+Step 3 — ChatMessage Data Model
+Implement the ChatMessage Dart class in lib/models/chat_message.dart. This is the core data transfer object for the messaging subsystem.
+
+// lib/models/chat_message.dart class ChatMessage {   final String messageText;   final bool isSentByUser;   final DateTime timestamp;    ChatMessage({     required this.messageText,     required this.isSentByUser,     DateTime? timestamp,   }) : timestamp = timestamp ?? DateTime.now();    String getMessage() => messageText;   bool isFromUser() => isSentByUser; }
+
+Step 4 — Permission Handling Service
+Implement PermissionHandlerService in lib/services/permission_handler_service.dart. This service checks and requests Bluetooth permissions, branching on the Android SDK version to handle both the legacy (API < 31) and modern (API 31+) permission models.
+
+// lib/services/permission_handler_service.dart import 'package:permission_handler/permission_handler.dart';  class PermissionHandlerService {   List<Permission> permissions = [];    Future<bool> checkAndRequest() async {     // Android 12+ uses BLUETOOTH_SCAN + BLUETOOTH_CONNECT     // Android 8-11 uses BLUETOOTH + ACCESS_FINE_LOCATION     permissions = [       Permission.bluetooth,       Permission.bluetoothScan,       Permission.bluetoothConnect,       Permission.locationWhenInUse,     ];     Map<Permission, PermissionStatus> statuses =         await permissions.request();     return statuses.values.every(         (s) => s == PermissionStatus.granted);   }    Future<bool> checkStatus() async {     for (var p in permissions) {       if (await p.status != PermissionStatus.granted) return false;     }     return true;   } }
+
+Step 5 — BluetoothManager and ConnectionManager
+Implement BluetoothManager to interface with the flutter_bluetooth_serial adapter APIs, and ConnectionManager to own the connection state machine. The ConnectionManager exposes the connectionState stream to the rest of the application, ensuring all state transitions are observable by the UI layer.
+
+// lib/services/connection_manager.dart (core outline) import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart'; import 'dart:async';  enum ConnectionState {   idle, discovering, connecting, connected, reconnecting, disconnected }  class ConnectionManager {   final _stateController =       StreamController<ConnectionState>.broadcast();   Stream<ConnectionState> get stateStream => _stateController.stream;    ConnectionState _state = ConnectionState.idle;   BluetoothDevice? connectedDevice;   BluetoothConnection? activeSocket;   int reconnectAttempts = 0;   static const int maxRetries = 3;    Future<void> connectTo(BluetoothDevice device) async {     _setState(ConnectionState.connecting);     connectedDevice = device;     try {       activeSocket = await BluetoothConnection.toAddress(           device.address);       reconnectAttempts = 0;       _setState(ConnectionState.connected);     } catch (e) {       _handleConnectionFailure();     }   }    Future<void> _handleConnectionFailure() async {     if (reconnectAttempts < maxRetries) {       reconnectAttempts++;       _setState(ConnectionState.reconnecting);       await Future.delayed(const Duration(seconds: 2));       await connectTo(connectedDevice!);     } else {       _setState(ConnectionState.disconnected);       _clearSession();     }   }    void disconnect() {     activeSocket?.dispose();     _clearSession();     _setState(ConnectionState.disconnected);   }    void _clearSession() {     activeSocket = null;     connectedDevice = null;     reconnectAttempts = 0;   }    void _setState(ConnectionState s) {     _state = s;     _stateController.add(s);   }    void dispose() => _stateController.close(); }
+
+Step 6 — Messaging Module
+Implement MessagingModule to handle UTF-8 encoding, newline-delimited framing, and stream-based send/receive operations. This module subscribes to the RFCOMM socket's InputStream and publishes decoded messages to a Dart StreamController.
+
+// lib/services/messaging_module.dart import 'dart:typed_data'; import 'dart:convert'; import 'dart:async'; import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart'; import '../models/chat_message.dart';  class MessagingModule {   final BluetoothConnection socket;   final _messageController =       StreamController<ChatMessage>.broadcast();   Stream<ChatMessage> get messageStream => _messageController.stream;    final List<ChatMessage> messageList = [];   StreamSubscription? _inputSub;   String _buffer = '';    MessagingModule(this.socket) {     _inputSub = socket.input!.listen(_onData, onDone: _onDone);   }    void _onData(Uint8List data) {     _buffer += utf8.decode(data);     while (_buffer.contains('\n')) {       final idx = _buffer.indexOf('\n');       final text = _buffer.substring(0, idx).trim();       _buffer = _buffer.substring(idx + 1);       if (text.isNotEmpty) {         final msg = ChatMessage(             messageText: text, isSentByUser: false);         messageList.add(msg);         _messageController.add(msg);       }     }   }    void sendMessage(String text) {     final bytes = utf8.encode('$text\n');     socket.output.add(Uint8List.fromList(bytes));     final msg = ChatMessage(         messageText: text, isSentByUser: true);     messageList.add(msg);     _messageController.add(msg);   }    void _onDone() => _messageController.close();    void dispose() {     _inputSub?.cancel();     _messageController.close();   } }
+
+Step 7 — Device Discovery Screen
+Implement lib/screens/device_discovery_screen.dart as a StatefulWidget. The screen calls BluetoothManager to start discovery, renders paired and discovered devices using ListView widgets, and delegates device selection to ConnectionManager. Connection status is displayed via a color-coded chip widget bound to the ConnectionManager state stream.
+Key Dart patterns used: setState() for list updates, StreamBuilder for connection state chip, async/await for discovery API calls, and Navigator.push() for chat screen transition on successful connection.
+
+Step 8 — Chat Screen
+Implement lib/screens/chat_screen.dart as a StatefulWidget. The screen uses a StreamBuilder subscribed to MessagingModule.messageStream to reactively render incoming messages. The messageList is rendered in a ListView.builder, with message bubble alignment determined by ChatMessage.isSentByUser.
+The TextEditingController manages the message input field. On send, the controller text is passed to MessagingModule.sendMessage(), then cleared. A ReconnectionBanner widget is conditionally rendered based on ConnectionManager.stateStream emitting RECONNECTING.
+
+Step 9 — Testing
+Testing should be performed in two phases:
+
+Test Phase	Test Cases	Method
+Unit Testing	ChatMessage object creation and field access; PermissionHandlerService mock responses; ConnectionState enum transitions; UTF-8 encode/decode round-trip; Newline delimiter framing/parsing	Flutter unit tests (flutter_test)
+Integration Testing	Permission grant → discovery start; Device selection → RFCOMM connection; Message send/receive between two physical Android devices; Forced disconnection → reconnection attempts → DISCONNECTED state; Disconnect button → resource cleanup → Discovery Screen navigation	Two physical Android devices, manual end-to-end tests
+
+3.4 Implementation Milestone Timeline
+
+#	Phase	Key Deliverables	Target
+1	Project Setup	Flutter project, pubspec.yaml, AndroidManifest.xml, directory structure	Day 1–2
+2	Data Model + Permissions	ChatMessage class, PermissionHandlerService, SDK version branching	Day 3–4
+3	BluetoothManager	Adapter enable check, paired device retrieval, discovery stream	Day 5–6
+4	ConnectionManager	State machine, RFCOMM connect, reconnect logic, disconnect	Day 7–9
+5	MessagingModule	UTF-8 encode/decode, \n framing, send/receive streams, messageList	Day 10–11
+6	Discovery Screen UI	Device list rendering, scan button, status chip, navigation	Day 12–13
+7	Chat Screen UI	StreamBuilder messages, bubbles, input field, disconnect, reconnect banner	Day 14–15
+8	Unit Testing	ChatMessage, state machine, encoding tests	Day 16–17
+9	Integration Testing	Two-device end-to-end test, reconnection test, edge cases	Day 18–20
+10	Polish and Documentation	Bug fixes, code comments, README, final submission	Day 21–22
+
+3.5 AndroidManifest Build Config Note
+Set minSdkVersion to 26 and targetSdkVersion to 34 in android/app/build.gradle:
+
+// android/app/build.gradle android {     defaultConfig {         minSdkVersion 26         targetSdkVersion 34     } }
+
+3.6 Known Risks and Mitigations
+Risk	Impact	Mitigation
+Android Bluetooth stack variability across OEMs	RFCOMM connection may fail on some devices	Use createRfcommSocketToServiceRecord with fallback to createInsecureRfcommSocketToServiceRecord via reflection
+Android 12+ permission model changes	App may fail to discover devices without new permissions	Conditional permission request logic based on Build.VERSION.SDK_INT in PermissionHandlerService
+Socket InputStream blocking	UI may freeze during heavy receive load	All stream I/O on background isolate or async callbacks; UI updates only via setState/StreamBuilder on main isolate
+flutter_bluetooth_serial plugin stability	Upstream plugin may have unresolved issues	Pin to specific version 0.4.x; test on multiple devices; have native Android fallback plan
+No application-level encryption in v1.0	Messages transmitted in plaintext over RFCOMM	Documented as TBD-1 future enhancement; Bluetooth pairing provides link-layer security
+

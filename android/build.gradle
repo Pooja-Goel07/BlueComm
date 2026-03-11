@@ -1,0 +1,32 @@
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.buildDir = "../build"
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+subprojects {
+    project.evaluationDependsOn(":app")
+}
+// Fix for older plugins (e.g. flutter_bluetooth_serial) that lack a namespace
+// declaration required by AGP 8.x. Injects namespace from AndroidManifest package attribute.
+subprojects {
+    plugins.withId("com.android.library") {
+        def manifest = new File(project.projectDir, "src/main/AndroidManifest.xml")
+        if (manifest.exists()) {
+            def packageName = new groovy.util.XmlSlurper()
+                .parse(manifest).@package.toString()
+            if (packageName && (!android.namespace || android.namespace.isEmpty())) {
+                android.namespace = packageName
+            }
+        }
+    }
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}
