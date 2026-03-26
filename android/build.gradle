@@ -14,8 +14,12 @@ subprojects {
 }
 // Fix for older plugins (e.g. flutter_bluetooth_serial) that lack a namespace
 // declaration required by AGP 8.x. Injects namespace from AndroidManifest package attribute.
+// Also forces compileSdk 34 to resolve missing android:attr/lStar resource.
 subprojects {
     plugins.withId("com.android.library") {
+        // Force compileSdk 34 for all plugin subprojects — fixes lStar attribute error.
+        android.compileSdkVersion 34
+
         def manifest = new File(project.projectDir, "src/main/AndroidManifest.xml")
         if (manifest.exists()) {
             def packageName = new groovy.util.XmlSlurper()

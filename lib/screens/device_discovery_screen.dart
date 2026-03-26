@@ -442,6 +442,51 @@ class _DeviceDiscoveryScreenState extends State<DeviceDiscoveryScreen> {
     );
   }
 
+  // Displays a help dialog explaining how to use the app.
+  void _showHelpDialog() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.help_outline, color: Colors.blue),
+              SizedBox(width: 8),
+              Expanded(child: Text('How to use BlueComm')),
+            ],
+          ),
+          content: const SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('1. Enter your Display Name in the text field.'),
+                SizedBox(height: 8),
+                Text('2. Make sure Bluetooth is enabled and permissions are granted.'),
+                SizedBox(height: 8),
+                Text('3. Both devices must be running the BlueComm app.'),
+                SizedBox(height: 8),
+                Text('4. Tap "Scan for Devices" to look for nearby Bluetooth devices.'),
+                SizedBox(height: 8),
+                Text('5. Tap on a device from the list to send a connection request.'),
+                SizedBox(height: 8),
+                Text('6. The other user will receive a dialog to Accept or Decline the request.'),
+                SizedBox(height: 8),
+                Text('7. Once accepted, you will both be taken to the Chat Screen to start messaging.'),
+              ],
+            ),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Got it!'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
     _nameController.dispose();
@@ -457,6 +502,11 @@ class _DeviceDiscoveryScreenState extends State<DeviceDiscoveryScreen> {
         title: const Text('BlueComm'),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.help_outline),
+            onPressed: _showHelpDialog,
+            tooltip: 'How to use',
+          ),
           // Connection status chip displayed in the app bar.
           Padding(
             padding: const EdgeInsets.only(right: 12),
