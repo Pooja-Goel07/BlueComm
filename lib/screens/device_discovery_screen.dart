@@ -399,10 +399,17 @@ class _DeviceDiscoveryScreenState extends State<DeviceDiscoveryScreen> {
           actionsAlignment: MainAxisAlignment.spaceEvenly,
           actions: [
             TextButton.icon(
-              onPressed: () {
+              onPressed: () async {
                 Navigator.of(dialogContext).pop();
                 _pendingIncomingApproval = false;
-                // Decline: disconnect the already-accepted socket.
+                // Decline: send disconnect signal so the sender gets notified
+                // immediately, then close the socket.
+                final bytes = Uint8List.fromList(
+                  utf8.encode('${MessagingModule.disconnectSignal}\n'),
+                );
+                await _connectionManager.rfcommChannel.send(bytes);
+                // Small delay to let the signal reach the sender before socket closes.
+                await Future.delayed(const Duration(milliseconds: 300));
                 _connectionManager.disconnect();
                 _showSnackBar('Connection declined.');
               },
